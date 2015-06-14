@@ -8,6 +8,10 @@
 #include <QPushButton>
 
 
+/*!
+ * \brief The ImageViewerMarker компонент drag-n-drop для манипуляции
+ * с положением или размером каких-либо визуальных компонентов.
+ */
 class ImageViewerMarker : public QLabel
 {
     Q_OBJECT
@@ -28,6 +32,9 @@ private:
 };
 
 
+/*!
+ * \brief The ImageViewer компонент просмотра изображения
+ */
 class ImageViewer : public QWidget
 {
     Q_OBJECT

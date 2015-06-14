@@ -6,8 +6,12 @@
 #include <QMenuBar>
 #include <QHBoxLayout>
 #include <QCoreApplication>
+#include <QPainter>
+#include <QFileDialog>
+#include <QtConcurrent/QtConcurrent>
 
 #include "imageutils.h"
+#include "matrixutils.h"
 #include "wavelet.h"
 #include "performancetimer.h"
 
@@ -15,71 +19,21 @@
 
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), filePath("G:\\TestPhotos\\test.jpg")
+    : QMainWindow(parent), isSearching(false), searchIter(0)
 {
+    connect(&watcher, SIGNAL(finished()), this, SLOT(handleExtremumsFinished()));
+
     createMenus();
 
     viewer = new ImageViewer(this);
     viewer->resize(300, 300);
     viewer->move(20, 40);
 
-    QImage image(filePath);
-    viewer->setImage(image);
-
-    waveletViewer = new ImageViewer(this);
-    waveletViewer->resize(300, 300);
-    waveletViewer->move(400, 40);
-
-    QWidget *controlWidget = new QWidget(this);
-    controlWidget->resize(600, 20);
-    controlWidget->move(0, 20);
-
-    QLabel *imageCaptionLabel = new QLabel("Image", controlWidget);
-
-    downSampleSlider = new QSlider(Qt::Horizontal, controlWidget);
-    downSampleSlider->setMinimum(0);
-    downSampleSlider->setMaximum(4);
-    downSampleSlider->setValue(0);
-    connect(downSampleSlider, SIGNAL(valueChanged(int)), this, SLOT(updateDownSampleLabel()));
-    connect(downSampleSlider, SIGNAL(valueChanged(int)), this, SLOT(updateDownSample()));
-
-    downSampleLabel = new QLabel(controlWidget);
-
-    QLabel *waveletCaptionLabel = new QLabel("Wavelet", controlWidget);
-
-    waveletScaleSlider = new QSlider(Qt::Horizontal, controlWidget);
-    waveletScaleSlider->setMinimum(0);
-    waveletScaleSlider->setMaximum(127);
-    waveletScaleSlider->setValue(0);
-    connect(waveletScaleSlider, SIGNAL(valueChanged(int)), this, SLOT(updateWaveletLabel()));
-
-    waveletScaleLabel = new QLabel(controlWidget);
-
-    updateWaveletScalePushButton = new QPushButton("Update");
-    connect(updateWaveletScalePushButton, SIGNAL(clicked()), this, SLOT(updateWavelet()));
-
-    computeWaveletScalePushButton = new QPushButton("Compute");
-    connect(computeWaveletScalePushButton, SIGNAL(clicked()), this, SLOT(computeWavelet()));
-
-    QHBoxLayout* hBoxLayout = new QHBoxLayout;
-    hBoxLayout->setMargin(0);
-    hBoxLayout->addWidget(imageCaptionLabel);
-    hBoxLayout->addWidget(downSampleSlider);
-    hBoxLayout->addWidget(downSampleLabel);
-    hBoxLayout->addSpacing(50);
-    hBoxLayout->addWidget(waveletCaptionLabel);
-    hBoxLayout->addWidget(waveletScaleSlider);
-    hBoxLayout->addWidget(waveletScaleLabel);
-    hBoxLayout->addWidget(updateWaveletScalePushButton);
-    hBoxLayout->addWidget(computeWaveletScalePushButton);
-    hBoxLayout->addStretch(1);
-
-    controlWidget->setLayout(hBoxLayout);
+    progressDialog = new QProgressDialog("Search in progress.", QString(), 0, 100, this);
 
     resize(800, 600);
-
-    updateDownSampleLabel();
 }
+
 
 MainWindow::~MainWindow()
 {
@@ -87,171 +41,303 @@ MainWindow::~MainWindow()
 }
 
 
+// Создать меню
 void MainWindow::createMenus(void)
 {
-    QAction *makeGrayAct = new QAction("Make gray", this);
-    connect(makeGrayAct, SIGNAL(triggered()), this, SLOT(makeGray()));
+    QAction *openFileAct = new QAction("Open...", this);
+    connect(openFileAct, SIGNAL(triggered()), this, SLOT(openFile()));
 
-    QAction *resetAct = new QAction("Reset", this);
-    connect(resetAct, SIGNAL(triggered()), this, SLOT(reset()));
+    QMenu *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(openFileAct);
+
+
+    QAction *findAct = new QAction("Search", this);
+    connect(findAct, SIGNAL(triggered()), this, SLOT(find()));
 
     QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
-    toolsMenu->addAction(makeGrayAct);
-    toolsMenu->addAction(resetAct);
+    toolsMenu->addAction(findAct);
 }
 
 
-void MainWindow::makeGray(void)
+// Открыть файл
+void MainWindow::openFile(void)
 {
-    if (viewer->getImage().isNull()) return;
-    QImage img;
-    ImageUtils::colorToGray(&img, viewer->getImage());
-    viewer->setImage(img);
+    QString fileName = QFileDialog::getOpenFileName(this,
+                                                    tr("Open File"),
+                                                    "/home",
+                                                    tr("Images (*.png *.bmp *.jpg)"));
+    if (!fileName.isEmpty()) {
+        filePath = fileName;        // Сохранить путь к файлу
+        setWindowTitle(QString("%1 - ImageWavelet").arg(filePath));
+        loadImage();                // Загрузить изображение
+    }
 }
 
 
-void MainWindow::reset(void)
+// Обновить изображение с учётом новых размеров и пр.
+void MainWindow::loadImage(void)
 {
-    QImage image(filePath);
-    viewer->setImage(image);
-}
-
-
-// Обновить изображение вейвлета
-void MainWindow::updateWavelet(void)
-{
-    Wavelet::Matrix2D<int> matrix;
-    Wavelet::getWavelet2dMatrix<int>(&matrix, &Wavelet::getFhat2d, waveletScaleSlider->value(), 127.0);
-
-    int sum = 0;
-    QImage img(matrix.getSize(), QImage::Format_RGB32);
-    for (int i = 0; i < matrix.getWidth(); ++i)
-        for (int j = 0; j < matrix.getHeight(); ++j) {
-            sum += (matrix.getData())[i][j];
-            int gray = (matrix.getData())[i][j] + 127;
-            img.setPixel(i, j, qRgb(gray, gray, gray));
+    if (!filePath.isEmpty()) {
+        QImage image(filePath);
+        if (image.isNull()) {     // Если изображение не открыто
+            qWarning() << QString("Image path \"%1\" is incorrect").arg(filePath);
+            return;
         }
-    qDebug() << sum;
-    waveletViewer->setImage(img);
+        viewer->setImage(image);
+    }
 }
 
 
-// Пройтись вейвлетом по текущему изображению
-void MainWindow::computeWavelet(void)
+// Найти круглую светлую структуру
+void MainWindow::find(void)
 {
-CTimer timer;
-timer.Start();
+    if (isSearching) {      // Если поиск активен
+        qWarning() << "Searching in progress";
+        return;     // Не выполнять перезапуск процедуры поиска
+    }
 
-    float ratio = 10000.0;   // Масштабирующе-смещающий коэффициент при расчёте коэффициентов вейвлета
-
-    // Анализируемое изображение
-    QImage img(filePath);
-    if (img.isNull())
+    if (filePath.isEmpty()) {       // Если путь к файлу не задан
+        qWarning() << "File path is empty";
         return;
+    }
 
-    QList< QPair<int, int> > downSampleWaveletPairList;
+    // 1. Загрузить изображение
+    QImage image(filePath);
+    if (image.isNull()) {       // Если изображение не открыто
+        qWarning() << QString("Image path \"%1\" is incorrect").arg(filePath);
+        return;
+    }
 
-    downSampleWaveletPairList << QPair<int, int>(downSampleSlider->value(), waveletScaleSlider->value());
-    //downSampleWaveletPairList << QPair<int, int>(0, 4);
-    //downSampleWaveletPairList << QPair<int, int>(0, 8);
-    //downSampleWaveletPairList << QPair<int, int>(0, 16);
-    //downSampleWaveletPairList << QPair<int, int>(0, 32);
-    //downSampleWaveletPairList << QPair<int, int>(1, 32);
-    //downSampleWaveletPairList << QPair<int, int>(1, 64);
-    //downSampleWaveletPairList << QPair<int, int>(2, 64);
-    //downSampleWaveletPairList << QPair<int, int>(2, 128);
+    // 2. Преобразовать изображение в матрицу
+    ImageUtils::imageToMatrix(image, &imageMatrix);
+
+    // 3. Запустить поиск сначала
+    execSearch(true);
+}
 
 
-    for (int k = 0; k < downSampleWaveletPairList.size(); k++) {
+// Обработчик цикла поиска,
+// reset = true - сбросить состояние и начать поиск с начала
+void MainWindow::execSearch(bool reset)
+{
+    // Размеры матрицы должны быть ненулевыми
+    Q_ASSERT (imageMatrix.getWidth() > 0);
+    Q_ASSERT (imageMatrix.getHeight() > 0);
 
-        QImage inImage(img.size(), img.format());
-        ImageUtils::downSampleImage(&inImage, img, downSampleWaveletPairList.at(k).first);
+    if (reset) {
+        isSearching = true;                         // Установить флаг активности процесса поиска
+        searchIter = 0;                             // Итерация поиска
+        progressDialog->setValue(0);
+        progressDialog->show();
 
-        // Преобразовать входное изображение в матрицу оттенков серого
-        Wavelet::Matrix2D<int> inMatrix(inImage.size());
-        int** inData = inMatrix.getData();
-        // Заполнить матрицу
-        for (int i = 0; i < inImage.width(); ++i)
-            for (int j = 0; j < inImage.height(); ++j)
-                inData[i][j] = qGray(inImage.pixel(i, j));
+        // Диаметр шара измеряется в относительных единицах от минимальной стороны матрицы
+        // 1.0 - Диаметр шара равен минимальной стороне матрицы
+        // 0.5 - Диаметр шара равен половине минимальной стороны матрицы
+        // Т.е. не важно для какого размера матрица
 
-        // Получить матрицу вейвлета
-        Wavelet::Matrix2D<int> wMatrix;
-        Wavelet::getWavelet2dMatrix<int>(&wMatrix, &Wavelet::getFhat2d, downSampleWaveletPairList.at(k).second, ratio);
+        // Начальные условия
+        float begin = getMinDiameter(imageMatrix.getSize());         // Начать с диаметра
+        float end = getMaxDiameter();                                // Закончить диаметром
+        float step = (end - begin) / Search_Diameter_Intervals;      // Шаг изменения диаметра
 
-        // Наложить вейвлет на входное изображение
-        Wavelet::Matrix2D<int> outMatrix;
-        Wavelet::imposeWavelet(&outMatrix, inMatrix, wMatrix, 255);
+        extrems.clear();    // Очистить старый список экстремумов
 
-        QPoint minPoint, maxPoint;
-        int minVal = ratio * 255, maxVal = 0;
+        // Заполнить список экстремумов
+        // Для всех диаметров
+        float diameter = begin;
+        while (diameter < end) {
+            extrems.append(Extremums(diameter));
+            diameter += step;
+        }
 
-        // Найти максимум и минимум
-        int** outData = outMatrix.getData();
-        for (int i = 0; i < outMatrix.getWidth(); ++i)
-            for (int j = 0; j < outMatrix.getHeight(); ++j) {
-                int val = outData[i][j];
-                if (val > maxVal) {
-                    maxVal = val;
-                    maxPoint = QPoint(i, j);
-                }
-                if (val < minVal) {
-                    minVal = val;
-                    minPoint = QPoint(i, j);
-                }
+        // Запустить асинхронное вычисление
+        HandleWrapper wrap(this);
+        QFuture<void> future = QtConcurrent::map(extrems, wrap);
+        watcher.setFuture(future);
+    }
+    else {
+        // Удалить некорректные экстремумы
+        int i = 0;
+        while (i < extrems.size()) {
+            if (extrems.at(i).diameter <= 0)
+                extrems.removeAt(i);
+            else
+                ++i;
+        }
+
+        int maxIndex = findIndexMaximum(extrems);       // Найти индекс максимального
+        Q_ASSERT (maxIndex >= 0);
+
+        if (searchIter < (Search_Iterations - 1)) {       // Если итерации не завершены
+            // Продолжать поиск относительно максимального экстремума
+            // слева и справа
+            int leftIndex = maxIndex - 1;       // Индекс левой части
+            if (leftIndex < 0) leftIndex = 0;
+            int rightIndex = maxIndex + 1;      // Индекс правой части
+            if (rightIndex >= extrems.size()) rightIndex = extrems.size() - 1;
+
+            float begin = extrems.at(leftIndex).diameter;
+            float end = extrems.at(rightIndex).diameter;
+            float step = (end - begin) / Search_Diameter_Intervals;
+
+            extrems.clear();    // Очистить старый список экстремумов
+
+            // Заполнить список экстремумов
+            // Для всех диаметров
+            float diameter = begin;
+            while (diameter < end) {
+                extrems.append(Extremums(diameter));
+                diameter += step;
             }
+            extrems.append(Extremums(end));     // Положить последний диаметр
 
-        // Сместить значение вверх на уровень минимума (чтобы минимум стал нулём)
-        int offset = 0;
-        if (minVal != 0)
-            offset = -minVal;
-        // Увеличить так, чтобы с учётом смещения, максимум был самым максимальным значением
-        float gain = (2.0 * 255.0 * ratio) / (maxVal + offset);
+            // Запустить асинхронное вычисление
+            HandleWrapper wrap(this);
+            QFuture<void> future = QtConcurrent::map(extrems, wrap);
+            watcher.setFuture(future);
 
-        // Преобразовать матрицу в выходное изображение
-        QImage outImage(outMatrix.getSize(), QImage::Format_RGB32);
+            ++searchIter;
+            progressDialog->setValue( (searchIter * 100) /
+                                        Search_Iterations);
+        }
+        else {                      // Если итерации завершены
+            // Поиск завершён
+            isSearching = false;
 
-        for (int i = 0; i < outMatrix.getWidth(); ++i)
-            for (int j = 0; j < outMatrix.getHeight(); ++j) {
-                int gray = (gain * (outData[i][j] + offset) / ratio) / 2;
-                if (gray > 255)
-                    gray = 255;
-                outImage.setPixel(i, j, qRgb(gray, gray, gray));
-            }
+            // Заполнить выходные данные
+            int d = extrems.at(maxIndex).diameter * qMin(imageMatrix.getWidth(), imageMatrix.getHeight());
+            QPoint center(imageMatrix.getWidth() * extrems.at(maxIndex).maxPoint.x(),
+                          imageMatrix.getHeight() * extrems.at(maxIndex).maxPoint.y());
 
-
-        quint64 ticks = timer.Ticks_after_Start();
-        double time = timer.Time();
-        qDebug() << "Min:" << minPoint << minVal << "Max:" << maxPoint << maxVal << "ticks:" << QString::number(ticks) + " sec:" + QString::number(time) + " fps:" + QString::number(1.0 / time);
-
-        outImage.setPixel(minPoint, QColor(Qt::red).rgb());
-        outImage.setPixel(maxPoint, QColor(Qt::green).rgb());
-        waveletViewer->setImage(outImage);
-        QCoreApplication::processEvents();
-        qDebug() << "K:" << k << "Min:" << minPoint << minVal << "Max:" << maxPoint << maxVal;
+            // Вывести исходную матрицу на экран вместе с результатом измерения
+            QRect circleRect(0, 0, d, d);
+            circleRect.moveCenter(center);
+            QImage image(filePath);
+            QPainter painter(&image);
+            painter.setPen(QPen(QBrush(Qt::red), 2));
+            painter.drawEllipse(circleRect);
+            painter.drawPoint(center);
+            viewer->setImage(image);
+            progressDialog->setValue(100);
+        }
     }
 
 }
 
 
-void MainWindow::updateDownSampleLabel(void)
+// Обработка экстремумов завершена
+void MainWindow::handleExtremumsFinished(void)
 {
-    downSampleLabel->setText( QString::number(1 << downSampleSlider->value()) );
+    execSearch(false);      // Запустить обработчик поиска
 }
 
 
-void MainWindow::updateDownSample(void)
+// Вычилить экстремумы для указанной матрицы и указанного диаметра
+MainWindow::Extremums MainWindow::computeExtremums(const Matrix::Matrix2D<int>& matrix, float diameter) const
 {
-    QImage image(filePath);
-    if (image.isNull())
-        return;
+    // Размеры матрицы должны быть ненулевыми
+    Q_ASSERT (matrix.getWidth() > 0);
+    Q_ASSERT (matrix.getHeight() > 0);
 
-    QImage img;
-    ImageUtils::downSampleImage(&img, image, downSampleSlider->value());
-    viewer->setImage(img);
+    // масштабирующий коэффициент для более точного целочисленного вычисления
+    const float Wavelet_Ratio = 1000.0;
+
+    // Найти оптимальный размер вейвлета и размер матрицы,
+    // исходя из исходного размера матрицы и заданного диаметра.
+    QPair<int, QSize> optSizes(getOptimumSizes(matrix.getSize(), diameter));
+
+    // Если размер матрицы вейвлета равен нулю, то исключаем текущий диаметр из поиска
+    if (optSizes.first <= 0)
+        return Extremums();
+
+    // Получить матрицу вейвлета
+    Matrix::Matrix2D<int> wMatrix;
+    unsigned int waveletSize = (optSizes.first - 1) >> 1;     // Коэффициент размера вейвлета
+    Wavelet::getWavelet2dMatrix<int>(&wMatrix, &Wavelet::getFhat2d, waveletSize, Wavelet_Ratio);
+
+    // Получить уменьшенную матрицу исходной
+    Matrix::Matrix2D<int> scaledMatrix;
+    Matrix::scaleMatrix(&scaledMatrix, matrix, optSizes.second);
+
+    // Наложить вейвлет на входное изображение
+    Matrix::Matrix2D<int> outMatrix;
+    Wavelet::imposeWavelet(&outMatrix, scaledMatrix, wMatrix, 255);
+
+    // Найти минимумы и максимумы
+    QPoint minPoint, maxPoint;
+    int minVal = Wavelet_Ratio * 255, maxVal = -Wavelet_Ratio * 255;
+
+    // Найти максимум и минимум
+    int** outData = outMatrix.getData();
+    for (int i = 0; i < outMatrix.getWidth(); ++i)
+        for (int j = 0; j < outMatrix.getHeight(); ++j) {
+            int val = outData[i][j];
+            if (val > maxVal) {
+                maxVal = val;
+                maxPoint = QPoint(i, j);
+            }
+            if (val < minVal) {
+                minVal = val;
+                minPoint = QPoint(i, j);
+            }
+        }
+
+    Extremums extrems;
+    extrems.diameter = diameter;
+    extrems.maxVal = maxVal;
+    extrems.minVal = minVal;
+    extrems.maxPoint = QPointF((float) maxPoint.x() / outMatrix.getWidth(),
+                               (float) maxPoint.y() / outMatrix.getHeight());
+    extrems.minPoint = QPointF((float) minPoint.x() / outMatrix.getWidth(),
+                               (float) minPoint.y() / outMatrix.getHeight());
+    return extrems;
 }
 
-void MainWindow::updateWaveletLabel(void)
+
+// Найти оптимальный размер вейвлета и размер матрицы.
+// Диаметр вычисляется по меньшей стороне.
+QPair<int, QSize> MainWindow::getOptimumSizes(QSize matrixSize, float diameter) const
 {
-    waveletScaleLabel->setText( QString::number(waveletScaleSlider->value() * 2 + 1) );
+    // Минимальный размер исходной матрицы, ниже которого нельзя
+    // его делать меньше
+    const int Min_Matrix_Size = 16;
+
+    Q_ASSERT (Min_Matrix_Size > 0);
+    Q_ASSERT (matrixSize.width() >= Min_Matrix_Size);
+    Q_ASSERT (matrixSize.height() >= Min_Matrix_Size);
+    Q_ASSERT (diameter > 0.0 && diameter <= getMaxDiameter());
+
+    Q_ASSERT (Optimum_Performance_Criteria > 10);
+    static const float Optimum_Value = pow(Optimum_Performance_Criteria, 4);
+
+    // Начинаем поиск от самого высокого разрешения (от исходного
+    // размера матрицы), а потом начинаем уменьшать его,
+    // чтобы достигнуть заданного оптимального значения
+
+    int mWidth = matrixSize.width();     // ширина матрицы
+    int mHeight = matrixSize.height();     // высота матрицы
+    float mRatio = (float) mWidth / mHeight;    // Коэффициент пропорциональности сторон
+    float wSize = 0;            // размер вейвлета
+    float diameterSize = 0.0;   // диаметр шарика
+    float sizesMult = 0.0;      // произведение квадратов размеров матрицы и вейвлета
+    while (mWidth > Min_Matrix_Size &&
+           mHeight > Min_Matrix_Size) {
+        // Определить размер шарика для текущего размера матрицы
+        diameterSize = diameter * qMin(mWidth, mHeight);
+        // Определить размер вейвлета (для выбранного вейвлета "Французская шляпа"
+        // размер вейвлета будет на sqrt(3) больше диаметра шара)
+        wSize = diameterSize * sqrt(3.0);
+
+        // Если размеры вейвлета и матрицы не оптимальны,
+        // то уменьшаем размер исходной матрицы вдвое
+        sizesMult = wSize * wSize * mWidth * mHeight;
+        if ( (sizesMult <= Optimum_Value) ||
+             ( (mWidth - 1) < Min_Matrix_Size) ||
+             ( ((float) mWidth / mRatio) < Min_Matrix_Size))
+            break;
+        mWidth--;
+        mHeight = (float) mWidth / mRatio;
+    }
+
+    return QPair<int, QSize>((int) wSize, QSize(mWidth, mHeight));
 }

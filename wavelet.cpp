@@ -2,9 +2,9 @@
 
 using namespace Wavelet;
 
-void Wavelet::imposeWavelet(Matrix2D<int>* outMatrix,
-                   const Matrix2D<int>& inMatrix,
-                   const Matrix2D<int>& wMatrix,
+void Wavelet::imposeWavelet(Matrix::Matrix2D<int>* outMatrix,
+                   const Matrix::Matrix2D<int>& inMatrix,
+                   const Matrix::Matrix2D<int>& wMatrix,
                    int outsideValue,
                    const QPoint& topLeft,
                    const QPoint& bottomRight)

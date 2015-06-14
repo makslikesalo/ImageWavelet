@@ -4,7 +4,7 @@
 #
 #-------------------------------------------------
 
-QT       += core gui
+QT       += core gui concurrent
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -16,11 +16,14 @@ SOURCES += main.cpp\
         mainwindow.cpp \
     imageviewer.cpp \
     wavelet.cpp \
-    imageutils.cpp
+    imageutils.cpp \
+    matrixutils.cpp
 
 HEADERS  += mainwindow.h \
     imageviewer.h \
     wavelet.h \
     performancetimer.h \
     performancetimer.h \
-    imageutils.h
+    imageutils.h \
+    matrix.h \
+    matrixutils.h

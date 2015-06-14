@@ -55,3 +55,35 @@ void ImageUtils::downSampleImage(QImage* out, const QImage& in, unsigned int val
                                          blueSum  / (ratio * ratio)) );
         }
 }
+
+
+// Получить матрицу оттенков серого изображения
+void ImageUtils::imageToMatrix(const QImage& img, Matrix::Matrix2D<int>* matrix)
+{
+    Q_ASSERT(matrix);
+
+    if (img.size().isEmpty())   // Если ширина или высота меньше или равна нулю
+        return;
+    // Преобразовать входное изображение в матрицу оттенков серого
+    matrix->resize(img.size());
+    int** data = matrix->getData();
+    const int Img_Width = img.width();
+    const int Img_Height = img.height();
+    // Заполнить матрицу
+    for (int i = 0; i < Img_Width; ++i)
+        for (int j = 0; j < Img_Height; ++j)
+            data[i][j] = qGray(img.pixel(i, j));
+}
+
+// Получить изображение по матрице
+void ImageUtils::matrixToImage(QImage* img, const Matrix::Matrix2D<int>& matrix)
+{
+    Q_ASSERT(img);
+    *img = QImage(matrix.getSize(), QImage::Format_RGB32);
+    for (int i = 0; i < matrix.getWidth(); ++i)
+        for (int j = 0; j < matrix.getHeight(); ++j) {
+            int gray = (matrix.getData())[i][j];
+            img->setPixel(i, j, qRgb(gray, gray, gray));
+        }
+}
+
